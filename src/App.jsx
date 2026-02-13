@@ -13,13 +13,31 @@ import {
   Paperclip,
   Download,
   Github,
-  Linkedin
+  Linkedin,
+  CheckCircle2,
+  XCircle,
+  Image as ImageIcon // Renombrado para evitar conflicto con constructor Image
 } from 'lucide-react';
 
 const API_BASE = 'https://api.mail.tm';
-const POLLING_INTERVAL = 10000; // 10 segundos para auto-refresh
-const ACCOUNT_CREATION_COOLDOWN = 60; // 60 segundos entre cuentas nuevas
-const MANUAL_REFRESH_COOLDOWN = 5000; // 5 segundos entre clicks manuales
+const POLLING_INTERVAL = 10000;
+const ACCOUNT_CREATION_COOLDOWN = 60;
+const MANUAL_REFRESH_COOLDOWN_SEC = 5;
+
+// --- Componente interno para animar los puntos (evita re-renderizar toda la App) ---
+const WaitingDots = () => {
+  const [dots, setDots] = useState('');
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots(prev => prev.length >= 3 ? '' : prev + '.');
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Usamos un ancho fijo (w-6) para minimizar el salto visual del texto centrado
+  return <span>{dots}</span>;
+};
 
 export default function App() {
   // --- Estados ---
@@ -28,14 +46,18 @@ export default function App() {
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [messageContentHtml, setMessageContentHtml] = useState('');
   
-  // Estados de carga y UI
-  const [isLoading, setIsLoading] = useState(false); // Carga general (crear cuenta)
-  const [isRefreshing, setIsRefreshing] = useState(false); // Carga de mensajes
+  // Nuevo estado para guardar las URLs de las imágenes descargadas (para vista previa en adjuntos)
+  const [attachmentPreviews, setAttachmentPreviews] = useState({}); // { [id]: blobUrl }
+
+  // UI States
+  const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
+  const [toast, setToast] = useState(null); 
   
-  // Estados de Rate Limiting (Cooldowns)
-  const [creationCooldown, setCreationCooldown] = useState(0); // Segundos restantes para cambiar mail
-  const [canManualRefresh, setCanManualRefresh] = useState(true); // Bloqueo de botón actualizar
+  // Rate Limiting
+  const [creationCooldown, setCreationCooldown] = useState(0);
+  const [refreshCooldown, setRefreshCooldown] = useState(0);
 
   // Modo Oscuro
   const [darkMode, setDarkMode] = useState(() => {
@@ -48,12 +70,11 @@ export default function App() {
 
   const pollingRef = useRef(null);
   const cooldownIntervalRef = useRef(null);
+  const toastTimeoutRef = useRef(null);
 
   // --- Efectos ---
 
-  // 1. Manejo del Modo Oscuro
   useEffect(() => {
-    // Aplicar clase al elemento HTML raíz
     if (darkMode) {
       document.documentElement.classList.add('dark');
       localStorage.setItem('theme', 'dark');
@@ -63,7 +84,6 @@ export default function App() {
     }
   }, [darkMode]);
 
-  // 2. Inicialización
   useEffect(() => {
     const init = async () => {
       const savedAccount = localStorage.getItem('tm_account');
@@ -73,7 +93,6 @@ export default function App() {
         setAccount(parsedAccount);
         fetchMessages(parsedAccount.token);
       } else {
-        console.log("✨ Iniciando primera cuenta...");
         await createNewAccount();
       }
     };
@@ -85,39 +104,47 @@ export default function App() {
     };
   }, []);
 
-  // 3. Polling automático
   useEffect(() => {
-    if (account?.token) {
-      startPolling();
-    }
+    if (account?.token) startPolling();
     return () => stopPolling();
   }, [account]);
 
-  // 4. Procesar HTML de mensajes
   useEffect(() => {
     if (selectedMessage && account?.token) {
+      // Limpiamos previews anteriores al cambiar de mensaje
+      setAttachmentPreviews({});
       processMessageContent(selectedMessage);
     }
   }, [selectedMessage]);
 
-  // 5. Gestión del contador de Cooldown
+  // Efecto Cooldown Creación
   useEffect(() => {
     if (creationCooldown > 0) {
       cooldownIntervalRef.current = setInterval(() => {
-        setCreationCooldown(prev => {
-          if (prev <= 1) {
-            clearInterval(cooldownIntervalRef.current);
-            return 0;
-          }
-          return prev - 1;
-        });
+        setCreationCooldown(prev => prev > 0 ? prev - 1 : 0);
       }, 1000);
     }
     return () => clearInterval(cooldownIntervalRef.current);
-  }, [creationCooldown]);
+  }, [creationCooldown > 0]); 
 
+  // Efecto Cooldown Refresh
+  useEffect(() => {
+    let interval = null;
+    if (refreshCooldown > 0) {
+      interval = setInterval(() => {
+        setRefreshCooldown((prev) => (prev > 0 ? prev - 1 : 0));
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [refreshCooldown > 0]);
 
   // --- Lógica de Negocio ---
+
+  const showToast = (message, type = 'success') => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToast({ message, type });
+    toastTimeoutRef.current = setTimeout(() => setToast(null), 3000);
+  };
 
   const generatePassword = () => Math.random().toString(36).slice(-8) + "Aa1!";
 
@@ -172,9 +199,7 @@ export default function App() {
       setMessages([]);
       setSelectedMessage(null);
       
-      if (account) {
-        setCreationCooldown(ACCOUNT_CREATION_COOLDOWN);
-      }
+      if (account) setCreationCooldown(ACCOUNT_CREATION_COOLDOWN);
 
     } catch (err) {
       console.error("❌ Error:", err);
@@ -185,11 +210,10 @@ export default function App() {
   };
 
   const handleManualRefresh = () => {
-    if (!canManualRefresh || isRefreshing) return;
+    if (refreshCooldown > 0 || isRefreshing) return;
     
     fetchMessages();
-    setCanManualRefresh(false);
-    setTimeout(() => setCanManualRefresh(true), MANUAL_REFRESH_COOLDOWN);
+    setRefreshCooldown(MANUAL_REFRESH_COOLDOWN_SEC);
   };
 
   const fetchMessages = async (tokenOverride = null) => {
@@ -224,6 +248,7 @@ export default function App() {
     if (!account?.token) return;
     setIsLoading(true);
     setMessageContentHtml('');
+    setAttachmentPreviews({}); // Reset previews
 
     try {
       const res = await fetch(`${API_BASE}/messages/${msgId}`, {
@@ -239,29 +264,106 @@ export default function App() {
     }
   };
 
+  const downloadAuthenticated = async (url, filename) => {
+    try {
+      showToast(`Descargando ${filename}...`, 'success');
+      const res = await fetch(`${API_BASE}${url}`, {
+        headers: { 'Authorization': `Bearer ${account.token}` }
+      });
+      
+      if (!res.ok) throw new Error('Error de descarga');
+      
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = filename || 'archivo';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(objectUrl);
+      
+      showToast("¡Descarga completada!", 'success');
+    } catch (e) {
+      console.error(e);
+      showToast("Error al descargar archivo", 'error');
+    }
+  };
+
+  // --- LÓGICA DE PROCESAMIENTO MEJORADA ---
   const processMessageContent = async (msg) => {
+    console.log("🛠️ Iniciando procesamiento de mensaje...");
     let html = msg.html || `<pre>${msg.text}</pre>`;
+    
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    
+    const newPreviews = {};
 
     if (msg.attachments && msg.attachments.length > 0) {
-      const promises = msg.attachments.map(async (att) => {
-        if (!att.contentId) return;
-        const cleanId = att.contentId.replace(/[<>]/g, '');
+      const imageAttachments = msg.attachments.filter(att => att.contentType.startsWith('image/'));
+      
+      const promises = imageAttachments.map(async (att) => {
+        let needsReplacement = false;
+        let isOrphan = true;
 
-        if (att.contentType.startsWith('image/') && html.includes(`cid:${cleanId}`)) {
-          try {
-            const res = await fetch(`${API_BASE}${att.downloadUrl}`, {
-              headers: { 'Authorization': `Bearer ${account.token}` }
+        // Chequear CID
+        if (att.contentId) {
+            const cleanId = att.contentId.replace(/[<>]/g, '');
+            if (html.includes(`cid:${cleanId}`)) {
+                needsReplacement = true;
+                isOrphan = false;
+            }
+        }
+
+        // Chequear URL directa
+        if (!needsReplacement) {
+            const imgs = doc.querySelectorAll('img');
+            imgs.forEach(img => {
+                if (img.src.includes(att.downloadUrl) || img.getAttribute('src')?.includes(att.downloadUrl)) {
+                    needsReplacement = true;
+                    isOrphan = false;
+                }
             });
+        }
+
+        // Descargamos la imagen SIEMPRE si es imagen
+        try {
+            const res = await fetch(`${API_BASE}${att.downloadUrl}`, {
+                headers: { 'Authorization': `Bearer ${account.token}` }
+            });
+
+            if (!res.ok) throw new Error(`Fetch error: ${res.status}`);
+
             const blob = await res.blob();
             const objectUrl = URL.createObjectURL(blob);
-            html = html.replace(new RegExp(`cid:${cleanId}`, 'g'), objectUrl);
-          } catch (e) {
-            console.error("Error img:", e);
-          }
+            
+            // Guardamos el preview
+            newPreviews[att.id] = objectUrl;
+
+            // Si estaba en el HTML, hacemos el reemplazo
+            if (needsReplacement) {
+                if (att.contentId) {
+                    const cleanId = att.contentId.replace(/[<>]/g, '');
+                    html = html.split(`cid:${cleanId}`).join(objectUrl);
+                }
+                const fullUrl = `${API_BASE}${att.downloadUrl}`;
+                html = html.split(fullUrl).join(objectUrl);
+                html = html.split(att.downloadUrl).join(objectUrl);
+                console.log(`✅ Imagen reemplazada inline: ${att.filename}`);
+            }
+            
+        } catch (e) {
+            console.error("❌ Error cargando imagen:", e);
         }
       });
+      
       await Promise.all(promises);
+      
+      setAttachmentPreviews(prev => ({...prev, ...newPreviews}));
     }
+    
     setMessageContentHtml(html);
   };
 
@@ -286,40 +388,70 @@ export default function App() {
     createNewAccount();
   };
 
-  const copyToClipboard = () => {
+  const copyToClipboard = async () => {
     if (!account?.address) return;
-    if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(account.address)
-            .then(() => alert("¡Dirección copiada!"))
-            .catch(() => fallbackCopy(account.address));
-    } else {
-        fallbackCopy(account.address);
-    }
-  };
+    
+    const success = () => showToast("¡Dirección copiada!", 'success');
+    const fail = (e) => {
+        console.error("Copy failed:", e);
+        showToast("Error al copiar", 'error');
+    };
 
-  const fallbackCopy = (text) => {
-    const textArea = document.createElement("textarea");
-    textArea.value = text;
-    textArea.style.position = "fixed";
-    textArea.style.left = "-9999px";
-    document.body.appendChild(textArea);
-    textArea.focus();
-    textArea.select();
-    try {
-      document.execCommand('copy');
-      alert("¡Dirección copiada!");
-    } catch (err) {
-      alert("Error al copiar manual.");
+    const runFallback = () => {
+        try {
+            const textArea = document.createElement("textarea");
+            textArea.value = account.address;
+            textArea.style.position = "fixed";
+            textArea.style.left = "-9999px";
+            textArea.style.top = "0";
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            const successful = document.execCommand('copy');
+            document.body.removeChild(textArea);
+            if (successful) success();
+            else fail("ExecCommand returned false");
+        } catch (e) {
+            fail(e);
+        }
+    };
+
+    if (navigator.clipboard && window.isSecureContext) {
+        try {
+            await navigator.clipboard.writeText(account.address);
+            success();
+        } catch (err) {
+            console.warn("Navigator clipboard failed, trying fallback...", err);
+            runFallback();
+        }
+    } else {
+        runFallback();
     }
-    document.body.removeChild(textArea);
   };
 
   // --- Renderizado UI ---
 
-  // VISTA DETALLE MENSAJE
+  const Toast = () => (
+    <div className={`fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50 transition-all duration-300 ${toast ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
+      <div className={`px-6 py-3 rounded-full shadow-lg flex items-center gap-3 font-medium ${
+        toast?.type === 'error' 
+          ? 'bg-red-600 text-white' 
+          : 'bg-gray-800 dark:bg-white text-white dark:text-gray-900'
+      }`}>
+        {toast?.type === 'error' ? (
+           <XCircle size={20} className="text-white" />
+        ) : (
+           <CheckCircle2 size={20} className="text-green-400 dark:text-green-600" />
+        )}
+        {toast?.message}
+      </div>
+    </div>
+  );
+
   if (selectedMessage) {
     return (
       <div className="min-h-screen bg-gray-100 dark:bg-slate-900 text-gray-800 dark:text-gray-100 flex flex-col font-sans transition-colors duration-200">
+        <Toast />
         <header className="bg-white dark:bg-slate-800 shadow-sm p-4 sticky top-0 z-10 flex items-center gap-4">
           <button 
             onClick={() => setSelectedMessage(null)}
@@ -372,27 +504,64 @@ export default function App() {
                 <h4 className="text-sm font-semibold mb-3 flex items-center gap-2 text-gray-500 dark:text-gray-400">
                   <Paperclip size={16} /> Adjuntos ({selectedMessage.attachments.length})
                 </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  {selectedMessage.attachments.map((att) => (
-                    <a 
-                      key={att.id}
-                      href={`${API_BASE}${att.downloadUrl}?token=${account.token}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center p-3 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-700 hover:border-blue-500 transition-colors group"
-                    >
-                      <div className="bg-blue-100 dark:bg-blue-900 p-2 rounded mr-3 text-blue-600 dark:text-blue-300">
-                        {att.contentType.includes('image') ? <div className="text-xs font-bold">IMG</div> : <div className="text-xs font-bold">FILE</div>}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate text-gray-700 dark:text-gray-200 group-hover:text-blue-600 dark:group-hover:text-blue-400">
-                          {att.filename || 'Archivo sin nombre'}
-                        </p>
-                        <p className="text-xs text-gray-500">{(att.size / 1024).toFixed(1)} KB</p>
-                      </div>
-                      <Download size={16} className="text-gray-400 group-hover:text-blue-500" />
-                    </a>
-                  ))}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  {selectedMessage.attachments.map((att) => {
+                    const previewUrl = attachmentPreviews[att.id];
+                    
+                    if (previewUrl) {
+                      return (
+                        <div key={att.id} className="relative group rounded-lg overflow-hidden border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm hover:shadow-md transition-all">
+                          <div className="h-40 w-full bg-gray-200 dark:bg-slate-700 relative overflow-hidden flex items-center justify-center">
+                            <img 
+                              src={previewUrl} 
+                              alt={att.filename}
+                              className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                            />
+                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                                <button 
+                                  onClick={() => window.open(previewUrl, '_blank')}
+                                  className="p-2 bg-white/90 text-gray-800 rounded-full hover:bg-white transition-colors"
+                                  title="Ver completa"
+                                >
+                                  <ImageIcon size={18} />
+                                </button>
+                                <button 
+                                  onClick={() => downloadAuthenticated(att.downloadUrl, att.filename)}
+                                  className="p-2 bg-blue-600/90 text-white rounded-full hover:bg-blue-600 transition-colors"
+                                  title="Descargar"
+                                >
+                                  <Download size={18} />
+                                </button>
+                            </div>
+                          </div>
+                          
+                          <div className="p-3 text-sm flex items-center justify-between bg-white dark:bg-slate-800">
+                             <span className="truncate font-medium flex-1 text-gray-700 dark:text-gray-200" title={att.filename}>{att.filename}</span>
+                             <span className="text-xs text-gray-400 ml-2">{(att.size / 1024).toFixed(0)} KB</span>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <button 
+                        key={att.id}
+                        onClick={() => downloadAuthenticated(att.downloadUrl, att.filename)}
+                        className="flex items-center p-3 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-700 hover:border-blue-500 transition-colors group text-left w-full shadow-sm"
+                      >
+                        <div className="bg-blue-100 dark:bg-blue-900 p-2 rounded mr-3 text-blue-600 dark:text-blue-300">
+                          <div className="text-xs font-bold">FILE</div>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate text-gray-700 dark:text-gray-200 group-hover:text-blue-600 dark:group-hover:text-blue-400">
+                            {att.filename || 'Archivo sin nombre'}
+                          </p>
+                          <p className="text-xs text-gray-500">{(att.size / 1024).toFixed(1)} KB</p>
+                        </div>
+                        <Download size={16} className="text-gray-400 group-hover:text-blue-500" />
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -405,6 +574,7 @@ export default function App() {
   // VISTA PRINCIPAL
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-slate-900 text-gray-800 dark:text-gray-100 flex flex-col font-sans transition-colors duration-200">
+      <Toast />
       
       {/* HEADER */}
       <nav className="bg-white dark:bg-slate-800 shadow-md sticky top-0 z-20">
@@ -463,13 +633,13 @@ export default function App() {
             
             <button 
               onClick={handleManualRefresh}
-              disabled={!account || isRefreshing || !canManualRefresh}
+              disabled={!account || isRefreshing || refreshCooldown > 0}
               className={`flex items-center gap-2 px-6 py-3 text-white rounded-lg font-medium shadow-md transition-all active:scale-95 disabled:opacity-50 disabled:active:scale-100 ${
-                 !canManualRefresh ? 'bg-gray-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700'
+                 refreshCooldown > 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700'
               }`}
             >
               <RefreshCw size={18} className={isRefreshing ? "animate-spin" : ""} /> 
-              {isRefreshing ? 'Actualizando...' : !canManualRefresh ? 'Espera 5s' : 'Actualizar'}
+              {isRefreshing ? 'Actualizando...' : refreshCooldown > 0 ? `Espera ${refreshCooldown}s` : 'Actualizar'}
             </button>
 
             <button 
@@ -517,7 +687,7 @@ export default function App() {
                     <Mail size={48} />
                   </div>
                 )}
-                <p className="text-lg font-medium">Esperando correos...</p>
+                <p className="text-lg font-medium">Esperando correos<WaitingDots /></p>
                 <p className="text-sm mt-2 opacity-75">La bandeja se actualiza automáticamente cada 10s.</p>
               </div>
             ) : (
