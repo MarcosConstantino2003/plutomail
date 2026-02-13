@@ -53,6 +53,7 @@ export default function App() {
 
   // 1. Manejo del Modo Oscuro
   useEffect(() => {
+    // Aplicar clase al elemento HTML raíz
     if (darkMode) {
       document.documentElement.classList.add('dark');
       localStorage.setItem('theme', 'dark');
@@ -65,9 +66,6 @@ export default function App() {
   // 2. Inicialización
   useEffect(() => {
     const init = async () => {
-      // Restaurar cooldown si existe (opcional, por ahora reinicia al recargar para no ser molesto)
-      // const savedCooldown = localStorage.getItem('tm_cooldown_end');
-      
       const savedAccount = localStorage.getItem('tm_account');
       if (savedAccount) {
         console.log("💾 Cuenta encontrada. Restaurando...");
@@ -124,7 +122,6 @@ export default function App() {
   const generatePassword = () => Math.random().toString(36).slice(-8) + "Aa1!";
 
   const createNewAccount = async () => {
-    // Protección doble por si acaso
     if (creationCooldown > 0 && account) return; 
 
     setIsLoading(true);
@@ -132,7 +129,6 @@ export default function App() {
     stopPolling();
 
     try {
-      // 1. Obtener dominio
       const domainRes = await fetch(`${API_BASE}/domains`);
       if (!domainRes.ok) throw new Error("Error obteniendo dominios");
       const domainData = await domainRes.json();
@@ -140,7 +136,6 @@ export default function App() {
       if (!domainData['hydra:member']?.length) throw new Error("No hay dominios disponibles");
       const domain = domainData['hydra:member'][0].domain;
       
-      // 2. Crear cuenta
       const username = `user${Math.random().toString(36).substring(2, 8)}`;
       const address = `${username}@${domain}`;
       const password = generatePassword();
@@ -156,7 +151,6 @@ export default function App() {
         throw new Error(err.message || "Error creando cuenta");
       }
 
-      // 3. Obtener Token
       const tokenRes = await fetch(`${API_BASE}/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -178,7 +172,6 @@ export default function App() {
       setMessages([]);
       setSelectedMessage(null);
       
-      // Activar cooldown de creación solo si NO es la primera carga (es decir, si el usuario ya tenía cuenta y la cambió)
       if (account) {
         setCreationCooldown(ACCOUNT_CREATION_COOLDOWN);
       }
@@ -195,8 +188,6 @@ export default function App() {
     if (!canManualRefresh || isRefreshing) return;
     
     fetchMessages();
-    
-    // Activar bloqueo temporal del botón
     setCanManualRefresh(false);
     setTimeout(() => setCanManualRefresh(true), MANUAL_REFRESH_COOLDOWN);
   };
@@ -287,7 +278,7 @@ export default function App() {
   };
 
   const logoutAndReset = () => {
-    if (creationCooldown > 0) return; // Bloqueo extra por seguridad
+    if (creationCooldown > 0) return; 
     localStorage.removeItem('tm_account');
     setAccount(null);
     setMessages([]);
@@ -325,7 +316,7 @@ export default function App() {
 
   // --- Renderizado UI ---
 
-  // VISTA DETALLE MENSAJE (Sin cambios mayores, solo mantenimiento)
+  // VISTA DETALLE MENSAJE
   if (selectedMessage) {
     return (
       <div className="min-h-screen bg-gray-100 dark:bg-slate-900 text-gray-800 dark:text-gray-100 flex flex-col font-sans transition-colors duration-200">
@@ -418,10 +409,17 @@ export default function App() {
       {/* HEADER */}
       <nav className="bg-white dark:bg-slate-800 shadow-md sticky top-0 z-20">
         <div className="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center">
-          <div className="flex items-center gap-2 select-none cursor-default">
-            <Mail className="text-blue-600 dark:text-blue-400" size={28} />
-            <h1 className="text-xl font-bold tracking-tight">TempMail<span className="text-blue-600 dark:text-blue-400">Pro</span></h1>
+          
+          <div className="flex items-center gap-3 select-none cursor-default group">
+            <div className="relative">
+              <Mail className="text-blue-600 dark:text-blue-400 transition-colors" size={28} />
+              <div className="absolute -top-1 -right-2 bg-orange-400 w-3 h-3 rounded-full border-2 border-white dark:border-slate-800 shadow-sm z-10 group-hover:animate-bounce"></div>
+            </div>
+            <h1 className="text-xl font-bold tracking-tight">
+              Pluto<span className="text-blue-600 dark:text-blue-400">Mail</span>
+            </h1>
           </div>
+
           <button 
             onClick={() => setDarkMode(!darkMode)}
             className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -436,7 +434,7 @@ export default function App() {
         
         {/* HERO SECTION */}
         <section className="w-full bg-white dark:bg-slate-800 rounded-2xl shadow-xl p-6 sm:p-10 text-center relative overflow-hidden transition-colors duration-200">
-          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-purple-600"></div>
+          <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-orange-400 via-blue-500 to-purple-600"></div>
           
           <h2 className="text-gray-500 dark:text-gray-400 text-sm font-semibold uppercase tracking-wider mb-4">Tu dirección temporal es</h2>
           
