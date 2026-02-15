@@ -48,6 +48,7 @@ export default function App() {
   
   // Nuevo estado para guardar las URLs de las imágenes descargadas (para vista previa en adjuntos)
   const [attachmentPreviews, setAttachmentPreviews] = useState({}); // { [id]: blobUrl }
+  const [attachmentBlobSizes, setAttachmentBlobSizes] = useState({}); // { [id]: bytes }
 
   // UI States
   const [isLoading, setIsLoading] = useState(false);
@@ -71,6 +72,7 @@ export default function App() {
   const pollingRef = useRef(null);
   const cooldownIntervalRef = useRef(null);
   const toastTimeoutRef = useRef(null);
+  const sizeDebugLoggedRef = useRef(new Set());
 
   // --- Efectos ---
 
@@ -113,6 +115,8 @@ export default function App() {
     if (selectedMessage && account?.token) {
       // Limpiamos previews anteriores al cambiar de mensaje
       setAttachmentPreviews({});
+      setAttachmentBlobSizes({});
+      sizeDebugLoggedRef.current = new Set();
       processMessageContent(selectedMessage);
     }
   }, [selectedMessage]);
@@ -249,6 +253,7 @@ export default function App() {
     setIsLoading(true);
     setMessageContentHtml('');
     setAttachmentPreviews({}); // Reset previews
+    setAttachmentBlobSizes({}); // Reset tamaños reales
 
     try {
       const res = await fetch(`${API_BASE}/messages/${msgId}`, {
@@ -300,6 +305,7 @@ export default function App() {
     const doc = parser.parseFromString(html, 'text/html');
     
     const newPreviews = {};
+    const newBlobSizes = {};
 
     if (msg.attachments && msg.attachments.length > 0) {
       const imageAttachments = msg.attachments.filter(att => att.contentType.startsWith('image/'));
@@ -328,6 +334,15 @@ export default function App() {
             });
         }
 
+        // Chequear esquema attachment:ATTACH_ID
+        if (!needsReplacement) {
+          const attachmentSrc = `attachment:${att.id}`;
+          if (html.includes(attachmentSrc)) {
+            needsReplacement = true;
+            isOrphan = false;
+          }
+        }
+
         // Descargamos la imagen SIEMPRE si es imagen
         try {
             const res = await fetch(`${API_BASE}${att.downloadUrl}`, {
@@ -341,6 +356,7 @@ export default function App() {
             
             // Guardamos el preview
             newPreviews[att.id] = objectUrl;
+            newBlobSizes[att.id] = blob.size;
 
             // Si estaba en el HTML, hacemos el reemplazo
             if (needsReplacement) {
@@ -351,6 +367,7 @@ export default function App() {
                 const fullUrl = `${API_BASE}${att.downloadUrl}`;
                 html = html.split(fullUrl).join(objectUrl);
                 html = html.split(att.downloadUrl).join(objectUrl);
+                html = html.split(`attachment:${att.id}`).join(objectUrl);
                 console.log(`✅ Imagen reemplazada inline: ${att.filename}`);
             }
             
@@ -362,7 +379,21 @@ export default function App() {
       await Promise.all(promises);
       
       setAttachmentPreviews(prev => ({...prev, ...newPreviews}));
+      setAttachmentBlobSizes(prev => ({...prev, ...newBlobSizes}));
     }
+
+    // Evitar errores del navegador por esquemas no soportados (attachment: / cid:)
+    const sanitizedDoc = parser.parseFromString(html, 'text/html');
+    sanitizedDoc.querySelectorAll('img').forEach((img) => {
+      const rawSrc = img.getAttribute('src') || '';
+      const normalizedSrc = rawSrc.trim().toLowerCase();
+
+      if (normalizedSrc.startsWith('attachment:') || normalizedSrc.startsWith('cid:')) {
+        img.removeAttribute('src');
+        img.setAttribute('data-src-pending', rawSrc);
+      }
+    });
+    html = sanitizedDoc.body.innerHTML;
     
     setMessageContentHtml(html);
   };
@@ -429,6 +460,105 @@ export default function App() {
     }
   };
 
+  const formatBytes = (bytes) => {
+    if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) return 'N/D';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const inferAttachmentSizeMultiplier = () => {
+    if (!selectedMessage?.attachments?.length) return 1;
+
+    for (const att of selectedMessage.attachments) {
+      const rawSize = Number(att?.size);
+      const blobSize = attachmentBlobSizes[att.id];
+
+      if (Number.isFinite(rawSize) && rawSize > 0 && Number.isFinite(blobSize) && blobSize > 0) {
+        const ratio = blobSize / rawSize;
+
+        if (ratio > 900 && ratio < 1150) {
+          return 1024;
+        }
+
+        if (ratio > 0.85 && ratio < 1.15) {
+          return 1;
+        }
+      }
+    }
+
+    return 1;
+  };
+
+  const logAttachmentSizeCalculation = ({ att, source, rawSize, multiplier, computedBytes }) => {
+    const messageId = selectedMessage?.id || 'no-message';
+    const logKey = `${messageId}:${att.id}:${source}:${rawSize}:${multiplier}:${computedBytes}`;
+
+    if (sizeDebugLoggedRef.current.has(logKey)) return;
+    sizeDebugLoggedRef.current.add(logKey);
+
+    console.log('📦 Cálculo tamaño adjunto', {
+      filename: att.filename,
+      attachmentId: att.id,
+      source,
+      apiRawSize: rawSize,
+      appliedMultiplier: multiplier,
+      computedBytes,
+      computedLabel: formatBytes(computedBytes)
+    });
+  };
+
+  const getAttachmentSizeLabel = (att) => {
+    const isImageAttachment = att?.contentType?.startsWith('image/');
+    const previewBytes = attachmentBlobSizes[att.id];
+
+    if (isImageAttachment && typeof previewBytes !== 'number') {
+      const messageId = selectedMessage?.id || 'no-message';
+      const pendingKey = `${messageId}:${att.id}:pending-image-size`;
+
+      if (!sizeDebugLoggedRef.current.has(pendingKey)) {
+        sizeDebugLoggedRef.current.add(pendingKey);
+        console.log('📦 Cálculo tamaño adjunto', {
+          filename: att.filename,
+          attachmentId: att.id,
+          source: 'pending.image',
+          note: 'Esperando blob.size para evitar tamaño incorrecto inicial'
+        });
+      }
+
+      return 'Cargando...';
+    }
+
+    if (typeof previewBytes === 'number') {
+      logAttachmentSizeCalculation({
+        att,
+        source: 'blob.size',
+        rawSize: previewBytes,
+        multiplier: 1,
+        computedBytes: previewBytes
+      });
+      return formatBytes(previewBytes);
+    }
+
+    const rawApiSize = Number(att?.size);
+    if (Number.isFinite(rawApiSize) && rawApiSize >= 0) {
+      const multiplier = inferAttachmentSizeMultiplier();
+      const computedBytes = rawApiSize * multiplier;
+
+      logAttachmentSizeCalculation({
+        att,
+        source: 'api.size',
+        rawSize: rawApiSize,
+        multiplier,
+        computedBytes
+      });
+
+      return formatBytes(computedBytes);
+    }
+
+    return 'N/D';
+  };
+
   // --- Renderizado UI ---
 
   const Toast = () => (
@@ -448,130 +578,7 @@ export default function App() {
     </div>
   );
 
-  if (selectedMessage) {
-    return (
-      <div className="min-h-screen bg-gray-100 dark:bg-slate-900 text-gray-800 dark:text-gray-100 flex flex-col font-sans transition-colors duration-200">
-        <Toast />
-        <header className="bg-white dark:bg-slate-800 shadow-sm p-4 sticky top-0 z-10 flex items-center gap-4">
-          <button 
-            onClick={() => setSelectedMessage(null)}
-            className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-slate-700 text-blue-600 dark:text-blue-400 transition-colors"
-          >
-            <ChevronLeft size={24} />
-          </button>
-          <h2 className="font-bold text-lg truncate flex-1">
-            {selectedMessage.subject || '(Sin Asunto)'}
-          </h2>
-        </header>
-
-        <main className="flex-1 p-4 max-w-4xl mx-auto w-full">
-          <div className="bg-white dark:bg-slate-800 rounded-lg shadow-lg overflow-hidden">
-            <div className="p-6 border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/50">
-              <div className="flex justify-between items-start gap-4">
-                <div>
-                  <h1 className="text-xl md:text-2xl font-bold mb-2 text-gray-900 dark:text-white">
-                    {selectedMessage.subject || '(Sin Asunto)'}
-                  </h1>
-                  <p className="text-sm text-gray-600 dark:text-gray-300">
-                    <span className="font-semibold text-gray-500 dark:text-gray-400">De:</span> {selectedMessage.from.name} 
-                    <span className="text-xs ml-2 opacity-75">&lt;{selectedMessage.from.address}&gt;</span>
-                  </p>
-                  <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
-                    <span className="font-semibold text-gray-500 dark:text-gray-400">Para:</span> {selectedMessage.to[0].address}
-                  </p>
-                </div>
-                <div className="text-right text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
-                  {new Date(selectedMessage.createdAt).toLocaleString()}
-                </div>
-              </div>
-            </div>
-            
-            <div className="p-6 min-h-[300px] bg-white dark:bg-slate-800 text-gray-800 dark:text-gray-200">
-              {messageContentHtml ? (
-                <div 
-                  className="prose dark:prose-invert max-w-none break-words [&>img]:max-w-full [&>img]:h-auto [&>img]:rounded-md" 
-                  dangerouslySetInnerHTML={{ __html: messageContentHtml }} 
-                />
-              ) : (
-                <div className="flex justify-center items-center py-10 opacity-50">
-                  <Loader2 className="animate-spin mr-2" /> Cargando contenido...
-                </div>
-              )}
-            </div>
-
-            {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
-              <div className="bg-gray-50 dark:bg-slate-900/50 p-4 border-t border-gray-200 dark:border-slate-700">
-                <h4 className="text-sm font-semibold mb-3 flex items-center gap-2 text-gray-500 dark:text-gray-400">
-                  <Paperclip size={16} /> Adjuntos ({selectedMessage.attachments.length})
-                </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  {selectedMessage.attachments.map((att) => {
-                    const previewUrl = attachmentPreviews[att.id];
-                    
-                    if (previewUrl) {
-                      return (
-                        <div key={att.id} className="relative group rounded-lg overflow-hidden border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm hover:shadow-md transition-all">
-                          <div className="h-40 w-full bg-gray-200 dark:bg-slate-700 relative overflow-hidden flex items-center justify-center">
-                            <img 
-                              src={previewUrl} 
-                              alt={att.filename}
-                              className="w-full h-full object-cover transition-transform group-hover:scale-105"
-                            />
-                            <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                                <button 
-                                  onClick={() => window.open(previewUrl, '_blank')}
-                                  className="p-2 bg-white/90 text-gray-800 rounded-full hover:bg-white transition-colors"
-                                  title="Ver completa"
-                                >
-                                  <ImageIcon size={18} />
-                                </button>
-                                <button 
-                                  onClick={() => downloadAuthenticated(att.downloadUrl, att.filename)}
-                                  className="p-2 bg-blue-600/90 text-white rounded-full hover:bg-blue-600 transition-colors"
-                                  title="Descargar"
-                                >
-                                  <Download size={18} />
-                                </button>
-                            </div>
-                          </div>
-                          
-                          <div className="p-3 text-sm flex items-center justify-between bg-white dark:bg-slate-800">
-                             <span className="truncate font-medium flex-1 text-gray-700 dark:text-gray-200" title={att.filename}>{att.filename}</span>
-                             <span className="text-xs text-gray-400 ml-2">{(att.size / 1024).toFixed(0)} KB</span>
-                          </div>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <button 
-                        key={att.id}
-                        onClick={() => downloadAuthenticated(att.downloadUrl, att.filename)}
-                        className="flex items-center p-3 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-700 hover:border-blue-500 transition-colors group text-left w-full shadow-sm"
-                      >
-                        <div className="bg-blue-100 dark:bg-blue-900 p-2 rounded mr-3 text-blue-600 dark:text-blue-300">
-                          <div className="text-xs font-bold">FILE</div>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium truncate text-gray-700 dark:text-gray-200 group-hover:text-blue-600 dark:group-hover:text-blue-400">
-                            {att.filename || 'Archivo sin nombre'}
-                          </p>
-                          <p className="text-xs text-gray-500">{(att.size / 1024).toFixed(1)} KB</p>
-                        </div>
-                        <Download size={16} className="text-gray-400 group-hover:text-blue-500" />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // VISTA PRINCIPAL
+  // VISTA PRINCIPAL UNIFICADA
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-slate-900 text-gray-800 dark:text-gray-100 flex flex-col font-sans transition-colors duration-200">
       <Toast />
@@ -665,65 +672,180 @@ export default function App() {
           )}
         </section>
 
-        {/* INBOX SECTION */}
-        <section className="w-full">
-          <div className="flex items-center justify-between mb-4 px-2">
-            <h3 className="text-xl font-bold flex items-center gap-2 text-gray-800 dark:text-white">
-              <Inbox size={24} className="text-gray-500 dark:text-gray-400" />
-              Bandeja de Entrada
-            </h3>
-            <span className="text-xs font-medium bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 px-3 py-1 rounded-full border border-blue-200 dark:border-blue-800">
-              {messages.length} mensajes
-            </span>
-          </div>
-
-          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-lg overflow-hidden min-h-[300px] border border-gray-100 dark:border-slate-700 transition-colors duration-200">
-            {messages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-80 text-gray-400 dark:text-gray-500 p-8 text-center">
-                {isLoading ? (
-                  <Loader2 className="animate-spin mb-4 text-blue-500" size={48} />
+        {/* CONTENIDO DINÁMICO - Bandeja o Email */}
+        {selectedMessage ? (
+          // VISTA DEL EMAIL ABIERTO
+          <section className="w-full">
+            <button 
+              onClick={() => setSelectedMessage(null)}
+              className="flex items-center gap-2 mb-4 px-4 py-2 text-blue-600 dark:text-blue-400 hover:bg-gray-200 dark:hover:bg-slate-700 rounded-lg font-medium transition-colors"
+            >
+              <ChevronLeft size={20} /> Volver a Bandeja
+            </button>
+            
+            <div className="bg-white dark:bg-slate-800 rounded-lg shadow-lg overflow-hidden">
+              <div className="p-6 border-b border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800/50">
+                <div className="flex justify-between items-start gap-4">
+                  <div>
+                    <h1 className="text-xl md:text-2xl font-bold mb-2 text-gray-900 dark:text-white">
+                      {selectedMessage.subject || '(Sin Asunto)'}
+                    </h1>
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      <span className="font-semibold text-gray-500 dark:text-gray-400">De:</span> {selectedMessage.from.name} 
+                      <span className="text-xs ml-2 opacity-75">&lt;{selectedMessage.from.address}&gt;</span>
+                    </p>
+                    <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">
+                      <span className="font-semibold text-gray-500 dark:text-gray-400">Para:</span> {selectedMessage.to[0].address}
+                    </p>
+                  </div>
+                  <div className="text-right text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap">
+                    {new Date(selectedMessage.createdAt).toLocaleString()}
+                  </div>
+                </div>
+              </div>
+              
+              <div className="p-6 min-h-[300px] bg-white dark:bg-slate-800 text-gray-800 dark:text-gray-200">
+                {messageContentHtml ? (
+                  <div 
+                    className="prose dark:prose-invert max-w-none break-words [&>img]:max-w-full [&>img]:h-auto [&>img]:rounded-md" 
+                    dangerouslySetInnerHTML={{ __html: messageContentHtml }} 
+                  />
                 ) : (
-                  <div className="bg-gray-100 dark:bg-slate-700/50 p-6 rounded-full mb-4 transition-colors">
-                    <Mail size={48} />
+                  <div className="flex justify-center items-center py-10 opacity-50">
+                    <Loader2 className="animate-spin mr-2" /> Cargando contenido...
                   </div>
                 )}
-                <p className="text-lg font-medium">Esperando correos<WaitingDots /></p>
-                <p className="text-sm mt-2 opacity-75">La bandeja se actualiza automáticamente cada 10s.</p>
               </div>
-            ) : (
-              <ul className="divide-y divide-gray-100 dark:divide-slate-700">
-                {messages.map((msg) => (
-                  <li key={msg.id}>
-                    <button 
-                      onClick={() => fetchMessageContent(msg.id)}
-                      className="w-full text-left p-4 sm:p-6 hover:bg-blue-50 dark:hover:bg-slate-700/50 transition-colors flex flex-col sm:flex-row gap-4 group"
-                    >
-                      <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-blue-100 to-blue-200 dark:from-blue-900 dark:to-slate-700 text-blue-700 dark:text-blue-300 rounded-full flex items-center justify-center font-bold text-xl shadow-sm">
-                        {msg.from.name ? msg.from.name[0].toUpperCase() : '@'}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between items-baseline mb-1">
-                          <h4 className="font-semibold text-lg truncate pr-2 text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
-                            {msg.from.name || msg.from.address}
-                          </h4>
-                          <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap font-mono">
-                            {new Date(msg.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                          </span>
+
+              {selectedMessage.attachments && selectedMessage.attachments.length > 0 && (
+                <div className="bg-gray-50 dark:bg-slate-900/50 p-4 border-t border-gray-200 dark:border-slate-700">
+                  <h4 className="text-sm font-semibold mb-3 flex items-center gap-2 text-gray-500 dark:text-gray-400">
+                    <Paperclip size={16} /> Adjuntos ({selectedMessage.attachments.length})
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {selectedMessage.attachments.map((att) => {
+                      const previewUrl = attachmentPreviews[att.id];
+                      
+                      if (previewUrl) {
+                        return (
+                          <div key={att.id} className="relative group rounded-lg overflow-hidden border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-800 shadow-sm hover:shadow-md transition-all">
+                            <div className="h-40 w-full bg-gray-200 dark:bg-slate-700 relative overflow-hidden flex items-center justify-center">
+                              <img 
+                                src={previewUrl} 
+                                alt={att.filename}
+                                className="w-full h-full object-cover transition-transform group-hover:scale-105"
+                              />
+                              <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                                  <button 
+                                    onClick={() => window.open(previewUrl, '_blank')}
+                                    className="p-2 bg-white/90 text-gray-800 rounded-full hover:bg-white transition-colors"
+                                    title="Ver completa"
+                                  >
+                                    <ImageIcon size={18} />
+                                  </button>
+                                  <button 
+                                    onClick={() => downloadAuthenticated(att.downloadUrl, att.filename)}
+                                    className="p-2 bg-blue-600/90 text-white rounded-full hover:bg-blue-600 transition-colors"
+                                    title="Descargar"
+                                  >
+                                    <Download size={18} />
+                                  </button>
+                              </div>
+                            </div>
+                            
+                            <div className="p-3 text-sm flex items-center justify-between bg-white dark:bg-slate-800">
+                               <span className="truncate font-medium flex-1 text-gray-700 dark:text-gray-200" title={att.filename}>{att.filename}</span>
+                               <span className="text-xs text-gray-400 ml-2">{getAttachmentSizeLabel(att)}</span>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <button 
+                          key={att.id}
+                          onClick={() => downloadAuthenticated(att.downloadUrl, att.filename)}
+                          className="flex items-center p-3 bg-white dark:bg-slate-800 rounded border border-gray-200 dark:border-slate-700 hover:border-blue-500 transition-colors group text-left w-full shadow-sm"
+                        >
+                          <div className="bg-blue-100 dark:bg-blue-900 p-2 rounded mr-3 text-blue-600 dark:text-blue-300">
+                            <div className="text-xs font-bold">FILE</div>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium truncate text-gray-700 dark:text-gray-200 group-hover:text-blue-600 dark:group-hover:text-blue-400">
+                              {att.filename || 'Archivo sin nombre'}
+                            </p>
+                            <p className="text-xs text-gray-500">{getAttachmentSizeLabel(att)}</p>
+                          </div>
+                          <Download size={16} className="text-gray-400 group-hover:text-blue-500" />
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        ) : (
+          // VISTA DE BANDEJA DE ENTRADA
+          <section className="w-full">
+            <div className="flex items-center justify-between mb-4 px-2">
+              <h3 className="text-xl font-bold flex items-center gap-2 text-gray-800 dark:text-white">
+                <Inbox size={24} className="text-gray-500 dark:text-gray-400" />
+                Bandeja de Entrada
+              </h3>
+              <span className="text-xs font-medium bg-blue-100 dark:bg-blue-900/50 text-blue-800 dark:text-blue-300 px-3 py-1 rounded-full border border-blue-200 dark:border-blue-800">
+                {messages.length} mensajes
+              </span>
+            </div>
+
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-lg overflow-hidden min-h-[300px] border border-gray-100 dark:border-slate-700 transition-colors duration-200">
+              {messages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-80 text-gray-400 dark:text-gray-500 p-8 text-center">
+                  {isLoading ? (
+                    <Loader2 className="animate-spin mb-4 text-blue-500" size={48} />
+                  ) : (
+                    <div className="bg-gray-100 dark:bg-slate-700/50 p-6 rounded-full mb-4 transition-colors">
+                      <Mail size={48} />
+                    </div>
+                  )}
+                  <p className="text-lg font-medium">Esperando correos<WaitingDots /></p>
+                  <p className="text-sm mt-2 opacity-75">La bandeja se actualiza automáticamente cada 10s.</p>
+                </div>
+              ) : (
+                <ul className="divide-y divide-gray-100 dark:divide-slate-700">
+                  {messages.map((msg) => (
+                    <li key={msg.id}>
+                      <button 
+                        onClick={() => fetchMessageContent(msg.id)}
+                        className="w-full text-left p-4 sm:p-6 hover:bg-blue-50 dark:hover:bg-slate-700/50 transition-colors flex flex-col sm:flex-row gap-4 group"
+                      >
+                        <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-br from-blue-100 to-blue-200 dark:from-blue-900 dark:to-slate-700 text-blue-700 dark:text-blue-300 rounded-full flex items-center justify-center font-bold text-xl shadow-sm">
+                          {msg.from.name ? msg.from.name[0].toUpperCase() : '@'}
                         </div>
-                        <p className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate mb-1">
-                          {msg.subject || '(Sin asunto)'}
-                        </p>
-                        <p className="text-sm text-gray-500 dark:text-gray-400 truncate opacity-90">
-                          {msg.intro || 'Haga clic para leer el contenido del mensaje...'}
-                        </p>
-                      </div>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </section>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex justify-between items-baseline mb-1">
+                            <h4 className="font-semibold text-lg truncate pr-2 text-gray-900 dark:text-gray-100 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                              {msg.from.name || msg.from.address}
+                            </h4>
+                            <span className="text-xs text-gray-500 dark:text-gray-400 whitespace-nowrap font-mono">
+                              {new Date(msg.createdAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                            </span>
+                          </div>
+                          <p className="text-sm font-medium text-gray-700 dark:text-gray-300 truncate mb-1">
+                            {msg.subject || '(Sin asunto)'}
+                          </p>
+                          <p className="text-sm text-gray-500 dark:text-gray-400 truncate opacity-90">
+                            {msg.intro || 'Haga clic para leer el contenido del mensaje...'}
+                          </p>
+                        </div>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </section>
+        )}
 
       </main>
 
