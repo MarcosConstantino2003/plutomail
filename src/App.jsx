@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import DOMPurify from 'dompurify';
 import {
   Mail,
   Copy,
@@ -16,7 +17,7 @@ import {
   Linkedin,
   CheckCircle2,
   XCircle,
-  Image as ImageIcon // Renombrado para evitar conflicto con constructor Image
+  Image as ImageIcon
 } from 'lucide-react';
 
 const API_BASE = 'https://api.mail.tm';
@@ -24,7 +25,7 @@ const POLLING_INTERVAL = 10000;
 const ACCOUNT_CREATION_COOLDOWN = 60;
 const MANUAL_REFRESH_COOLDOWN_SEC = 5;
 
-// --- Componente interno para animar los puntos (evita re-renderizar toda la App) ---
+
 const WaitingDots = () => {
   const [dots, setDots] = useState('');
 
@@ -35,32 +36,32 @@ const WaitingDots = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Usamos un ancho fijo (w-6) para minimizar el salto visual del texto centrado
+
   return <span>{dots}</span>;
 };
 
 export default function App() {
-  // --- Estados ---
+
   const [account, setAccount] = useState(null);
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [messageContentHtml, setMessageContentHtml] = useState('');
 
-  // Nuevo estado para guardar las URLs de las imágenes descargadas (para vista previa en adjuntos)
-  const [attachmentPreviews, setAttachmentPreviews] = useState({}); // { [id]: blobUrl }
-  const [attachmentBlobSizes, setAttachmentBlobSizes] = useState({}); // { [id]: bytes }
 
-  // UI States
+  const [attachmentPreviews, setAttachmentPreviews] = useState({});
+  const [attachmentBlobSizes, setAttachmentBlobSizes] = useState({});
+
+
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState(null);
   const [toast, setToast] = useState(null);
 
-  // Rate Limiting
+
   const [creationCooldown, setCreationCooldown] = useState(0);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
 
-  // Modo Oscuro
+
   const [darkMode, setDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('theme') === 'dark' ||
@@ -74,7 +75,7 @@ export default function App() {
   const toastTimeoutRef = useRef(null);
   const sizeDebugLoggedRef = useRef(new Set());
 
-  // --- Efectos ---
+
 
   useEffect(() => {
     if (darkMode) {
@@ -113,7 +114,7 @@ export default function App() {
 
   useEffect(() => {
     if (selectedMessage && account?.token) {
-      // Limpiamos previews anteriores al cambiar de mensaje
+
       setAttachmentPreviews({});
       setAttachmentBlobSizes({});
       sizeDebugLoggedRef.current = new Set();
@@ -121,7 +122,7 @@ export default function App() {
     }
   }, [selectedMessage]);
 
-  // Efecto Cooldown Creación
+
   useEffect(() => {
     if (creationCooldown > 0) {
       cooldownIntervalRef.current = setInterval(() => {
@@ -131,7 +132,7 @@ export default function App() {
     return () => clearInterval(cooldownIntervalRef.current);
   }, [creationCooldown > 0]);
 
-  // Efecto Cooldown Refresh
+
   useEffect(() => {
     let interval = null;
     if (refreshCooldown > 0) {
@@ -142,7 +143,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, [refreshCooldown > 0]);
 
-  // --- Lógica de Negocio ---
+
 
   const showToast = (message, type = 'success') => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -252,8 +253,8 @@ export default function App() {
     if (!account?.token) return;
     setIsLoading(true);
     setMessageContentHtml('');
-    setAttachmentPreviews({}); // Reset previews
-    setAttachmentBlobSizes({}); // Reset tamaños reales
+    setAttachmentPreviews({});
+    setAttachmentBlobSizes({});
 
     try {
       const res = await fetch(`${API_BASE}/messages/${msgId}`, {
@@ -296,7 +297,7 @@ export default function App() {
     }
   };
 
-  // --- LÓGICA DE PROCESAMIENTO MEJORADA ---
+
   const processMessageContent = async (msg) => {
     console.log("🛠️ Iniciando procesamiento de mensaje...");
     let html = msg.html || `<pre>${msg.text}</pre>`;
@@ -314,7 +315,7 @@ export default function App() {
         let needsReplacement = false;
         let isOrphan = true;
 
-        // Chequear CID
+
         if (att.contentId) {
           const cleanId = att.contentId.replace(/[<>]/g, '');
           if (html.includes(`cid:${cleanId}`)) {
@@ -323,7 +324,7 @@ export default function App() {
           }
         }
 
-        // Chequear URL directa
+
         if (!needsReplacement) {
           const imgs = doc.querySelectorAll('img');
           imgs.forEach(img => {
@@ -334,7 +335,7 @@ export default function App() {
           });
         }
 
-        // Chequear esquema attachment:ATTACH_ID
+
         if (!needsReplacement) {
           const attachmentSrc = `attachment:${att.id}`;
           if (html.includes(attachmentSrc)) {
@@ -343,7 +344,7 @@ export default function App() {
           }
         }
 
-        // Descargamos la imagen SIEMPRE si es imagen
+
         try {
           const res = await fetch(`${API_BASE}${att.downloadUrl}`, {
             headers: { 'Authorization': `Bearer ${account.token}` }
@@ -354,11 +355,11 @@ export default function App() {
           const blob = await res.blob();
           const objectUrl = URL.createObjectURL(blob);
 
-          // Guardamos el preview
+
           newPreviews[att.id] = objectUrl;
           newBlobSizes[att.id] = blob.size;
 
-          // Si estaba en el HTML, hacemos el reemplazo
+
           if (needsReplacement) {
             if (att.contentId) {
               const cleanId = att.contentId.replace(/[<>]/g, '');
@@ -382,7 +383,7 @@ export default function App() {
       setAttachmentBlobSizes(prev => ({ ...prev, ...newBlobSizes }));
     }
 
-    // Evitar errores del navegador por esquemas no soportados (attachment: / cid:)
+
     const sanitizedDoc = parser.parseFromString(html, 'text/html');
     sanitizedDoc.querySelectorAll('img').forEach((img) => {
       const rawSrc = img.getAttribute('src') || '';
@@ -394,6 +395,11 @@ export default function App() {
       }
     });
     html = sanitizedDoc.body.innerHTML;
+
+    html = DOMPurify.sanitize(html, {
+      ADD_TAGS: ['style'],
+      ADD_ATTR: ['data-src-pending']
+    });
 
     setMessageContentHtml(html);
   };
@@ -559,13 +565,13 @@ export default function App() {
     return 'N/D';
   };
 
-  // --- Renderizado UI ---
+
 
   const Toast = () => (
     <div className={`fixed bottom-8 left-1/2 transform -translate-x-1/2 z-50 transition-all duration-300 ${toast ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
       <div className={`px-6 py-3 rounded-full shadow-lg flex items-center gap-3 font-medium ${toast?.type === 'error'
-          ? 'bg-red-600 text-white'
-          : 'bg-gray-800 dark:bg-white text-white dark:text-gray-900'
+        ? 'bg-red-600 text-white'
+        : 'bg-gray-800 dark:bg-white text-white dark:text-gray-900'
         }`}>
         {toast?.type === 'error' ? (
           <XCircle size={20} className="text-white" />
@@ -577,18 +583,18 @@ export default function App() {
     </div>
   );
 
-  // VISTA PRINCIPAL UNIFICADA
+
   return (
     <div className="min-h-screen bg-gray-100 dark:bg-slate-900 text-gray-800 dark:text-gray-100 flex flex-col font-sans transition-colors duration-200">
       <Toast />
 
-      {/* HEADER */}
+
       <nav className="bg-white dark:bg-slate-800 shadow-md sticky top-0 z-20">
         <div className="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center">
 
           <div className="flex items-center gap-3 select-none cursor-default group">
             <div className="relative w-16 h-16 flex items-center justify-center">
-              <svg className="w-full h-full drop-shadow-md transition-transform group-hover:scale-105" xmlns="http://www.w3.org/2000/svg" viewBox="40 50 420 420">
+              <svg className="w-full h-full drop-shadow-md" xmlns="http://www.w3.org/2000/svg" viewBox="40 50 420 420">
                 <defs>
                   <linearGradient id="planetGrad" x1="0%" y1="0%" x2="100%" y2="100%">
                     <stop offset="0%" stopColor="#9E9E9E" />
@@ -670,7 +676,7 @@ export default function App() {
 
           <button
             onClick={() => setDarkMode(!darkMode)}
-            className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="p-2 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors focus:outline-none"
             title="Cambiar tema"
           >
             {darkMode ? <Sun size={20} /> : <Moon size={20} />}
@@ -680,7 +686,7 @@ export default function App() {
 
       <main className="flex-1 flex flex-col items-center w-full max-w-4xl mx-auto px-4 py-8 gap-8">
 
-        {/* HERO SECTION */}
+
         <section className="w-full bg-white dark:bg-slate-800 rounded-2xl shadow-xl p-6 sm:p-10 text-center relative overflow-hidden transition-colors duration-200">
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-orange-400 via-blue-500 to-purple-600"></div>
 
@@ -699,7 +705,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Botones de Acción */}
+
           <div className="flex flex-wrap justify-center gap-4">
             <button
               onClick={copyToClipboard}
@@ -723,8 +729,8 @@ export default function App() {
               onClick={logoutAndReset}
               disabled={isLoading || creationCooldown > 0}
               className={`flex items-center gap-2 px-6 py-3 rounded-lg font-medium transition-colors active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed ${creationCooldown > 0
-                  ? 'bg-gray-100 dark:bg-slate-800 text-gray-400 dark:text-gray-600 border border-gray-200 dark:border-slate-700'
-                  : 'bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-200'
+                ? 'bg-gray-100 dark:bg-slate-800 text-gray-400 dark:text-gray-600 border border-gray-200 dark:border-slate-700'
+                : 'bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-200'
                 }`}
             >
               <Trash2 size={18} />
@@ -741,9 +747,9 @@ export default function App() {
           )}
         </section>
 
-        {/* CONTENIDO DINÁMICO - Bandeja o Email */}
+
         {selectedMessage ? (
-          // VISTA DEL EMAIL ABIERTO
+
           <section className="w-full">
             <button
               onClick={() => setSelectedMessage(null)}
@@ -855,7 +861,7 @@ export default function App() {
             </div>
           </section>
         ) : (
-          // VISTA DE BANDEJA DE ENTRADA
+
           <section className="w-full">
             <div className="flex items-center justify-between mb-4 px-2">
               <h3 className="text-xl font-bold flex items-center gap-2 text-gray-800 dark:text-white">
@@ -918,7 +924,7 @@ export default function App() {
 
       </main>
 
-      {/* FOOTER */}
+
       <footer className="py-8 text-center text-gray-500 dark:text-gray-400 text-sm border-t border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-900 transition-colors">
         <div className="flex flex-col items-center justify-center gap-2">
           <div className="flex items-center gap-3">
