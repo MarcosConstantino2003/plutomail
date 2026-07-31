@@ -1,3 +1,94 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+html {
+  font-feature-settings: "cv11", "ss01";
+}
+
+body {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+::selection {
+  background-color: rgb(199 210 254);
+  color: rgb(30 27 75);
+}
+
+.dark ::selection {
+  background-color: rgb(67 56 202);
+  color: rgb(238 242 255);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgb(212 212 216);
+  border-radius: 9999px;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background-color: rgb(63 63 70);
+}
+
+/* Message body renderer (replaces the need for @tailwindcss/typography) */
+.message-body {
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: rgb(39 39 42);
+  word-break: break-word;
+}
+
+.dark .message-body {
+  color: rgb(228 228 231);
+}
+
+.message-body a {
+  color: rgb(79 70 229);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.dark .message-body a {
+  color: rgb(129 140 248);
+}
+
+.message-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.375rem;
+}
+
+.message-body p {
+  margin: 0.75em 0;
+}
+
+.message-body table {
+  max-width: 100%;
+}
+
+.message-body pre {
+  white-space: pre-wrap;
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-size: 0.875rem;
+}
+
+.message-body blockquote {
+  border-left: 2px solid rgb(212 212 216);
+  padding-left: 1rem;
+  color: rgb(113 113 122);
+  margin: 0.75em 0;
+}
+
+.dark .message-body blockquote {
+  border-left-color: rgb(63 63 70);
+  color: rgb(161 161 170);
+}
