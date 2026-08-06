@@ -15,9 +15,16 @@ export default function AddressPanel({
 }) {
   return (
     <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 sm:p-8">
-      <p className="text-xs font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500 mb-3">
-        Tu direccion temporal
-      </p>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+          Tu direccion temporal
+        </p>
+        {account?.provider && (
+          <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded">
+            {account.provider}
+          </span>
+        )}
+      </div>
 
       {isBootstrapping && !account ? (
         <div className="flex items-center gap-2.5 py-3.5 text-zinc-500 dark:text-zinc-400 text-sm">

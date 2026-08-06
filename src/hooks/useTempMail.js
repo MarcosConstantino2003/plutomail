@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { createTemporaryAccount, listMessages, getMessage, fetchAttachmentBlob, MailApiError } from '../lib/mailApi';
+import {
+  createTemporaryAccount,
+  listMessages,
+  getMessage,
+  fetchAttachmentBlob,
+  MailApiError,
+  DEFAULT_API_BASE,
+} from '../lib/mailApi';
 import { renderMessageBody } from '../lib/renderMessageBody';
 
 const STORAGE_KEY = 'plutomail_account';
@@ -7,6 +14,13 @@ const POLLING_INTERVAL_MS = 10000;
 const ACCOUNT_COOLDOWN_SEC = 60;
 const REFRESH_COOLDOWN_SEC = 5;
 const COPIED_FEEDBACK_MS = 750;
+
+// Accounts saved before multi-provider support was added won't have an apiBase field.
+// They were always created against mail.tm, so that's the safe fallback.
+function withApiBase(account) {
+  if (!account) return account;
+  return { apiBase: DEFAULT_API_BASE, ...account };
+}
 
 export function useTempMail() {
   const [account, setAccount] = useState(null);
@@ -35,12 +49,11 @@ export function useTempMail() {
     toastTimeoutRef.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
-  const fetchMessages = useCallback(async (tokenOverride) => {
-    const token = tokenOverride;
+  const fetchMessages = useCallback(async (apiBase, token) => {
     if (!token) return;
     setIsRefreshing(true);
     try {
-      const msgs = await listMessages(token);
+      const msgs = await listMessages(apiBase, token);
       setMessages(msgs);
     } catch (err) {
       if (err instanceof MailApiError && err.status === 401) {
@@ -73,10 +86,10 @@ export function useTempMail() {
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
-      const parsed = JSON.parse(saved);
+      const parsed = withApiBase(JSON.parse(saved));
       setAccount(parsed);
       setIsBootstrapping(false);
-      fetchMessages(parsed.token);
+      fetchMessages(parsed.apiBase, parsed.token);
     } else {
       createNewAccount();
     }
@@ -86,7 +99,7 @@ export function useTempMail() {
   // Polling
   useEffect(() => {
     if (!account?.token) return undefined;
-    pollingRef.current = setInterval(() => fetchMessages(account.token), POLLING_INTERVAL_MS);
+    pollingRef.current = setInterval(() => fetchMessages(account.apiBase, account.token), POLLING_INTERVAL_MS);
     return () => clearInterval(pollingRef.current);
   }, [account, fetchMessages]);
 
@@ -107,7 +120,7 @@ export function useTempMail() {
 
   const handleManualRefresh = useCallback(() => {
     if (!account?.token || isRefreshing || refreshCooldown > 0) return;
-    fetchMessages(account.token);
+    fetchMessages(account.apiBase, account.token);
     setRefreshCooldown(REFRESH_COOLDOWN_SEC);
   }, [account, isRefreshing, refreshCooldown, fetchMessages]);
 
@@ -117,9 +130,9 @@ export function useTempMail() {
     setMessageBodyHtml('');
     setAttachmentPreviews({});
     try {
-      const full = await getMessage(account.token, messageId);
+      const full = await getMessage(account.apiBase, account.token, messageId);
       setSelectedMessage(full);
-      const { html, resolvedAttachments } = await renderMessageBody(full, account.token);
+      const { html, resolvedAttachments } = await renderMessageBody(full, account.token, account.apiBase);
       setMessageBodyHtml(html);
       setAttachmentPreviews(resolvedAttachments);
     } catch {
@@ -172,7 +185,7 @@ export function useTempMail() {
     if (!account?.token) return;
     try {
       showToast(`Descargando ${attachment.filename}...`);
-      const blob = await fetchAttachmentBlob(account.token, attachment.downloadUrl);
+      const blob = await fetchAttachmentBlob(account.apiBase, account.token, attachment.downloadUrl);
       const objectUrl = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = objectUrl;

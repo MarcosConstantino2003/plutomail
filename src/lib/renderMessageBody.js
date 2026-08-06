@@ -1,9 +1,9 @@
 import DOMPurify from 'dompurify';
-import { fetchAttachmentBlob, API_BASE } from './mailApi';
+import { fetchAttachmentBlob } from './mailApi';
 
 // Resolves inline image attachments (cid:, attachment:, or direct download URLs) into blob
 // object URLs, then returns sanitized HTML plus a map of attachmentId -> { url, size }.
-export async function renderMessageBody(message, token) {
+export async function renderMessageBody(message, token, apiBase) {
   let html = message.html?.join?.('') || message.html || `<pre>${message.text || ''}</pre>`;
   if (Array.isArray(message.html)) html = message.html.join('');
 
@@ -31,7 +31,7 @@ export async function renderMessageBody(message, token) {
       if (!isReferenced && html.includes(`attachment:${att.id}`)) isReferenced = true;
 
       try {
-        const blob = await fetchAttachmentBlob(token, att.downloadUrl);
+        const blob = await fetchAttachmentBlob(apiBase, token, att.downloadUrl);
         const objectUrl = URL.createObjectURL(blob);
         resolved[att.id] = { url: objectUrl, size: blob.size };
 
@@ -40,7 +40,7 @@ export async function renderMessageBody(message, token) {
             const cleanId = att.contentId.replace(/[<>]/g, '');
             html = html.split(`cid:${cleanId}`).join(objectUrl);
           }
-          html = html.split(`${API_BASE}${att.downloadUrl}`).join(objectUrl);
+          html = html.split(`${apiBase}${att.downloadUrl}`).join(objectUrl);
           html = html.split(att.downloadUrl).join(objectUrl);
           html = html.split(`attachment:${att.id}`).join(objectUrl);
         }
