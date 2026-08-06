@@ -19,6 +19,7 @@ export default function App() {
       <main className="flex-1 w-full max-w-3xl mx-auto px-5 py-10 flex flex-col gap-8">
         <AddressPanel
           account={mail.account}
+          selectedProvider={mail.selectedProvider}
           isBootstrapping={mail.isBootstrapping}
           isRefreshing={mail.isRefreshing}
           refreshCooldown={mail.refreshCooldown}
@@ -29,6 +30,7 @@ export default function App() {
           onRefresh={mail.handleManualRefresh}
           onRotate={mail.rotateAccount}
           onRetry={mail.retryBootstrap}
+          onSelectProvider={mail.handleProviderChange}
         />
 
         {mail.selectedMessage ? (

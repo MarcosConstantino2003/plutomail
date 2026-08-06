@@ -24,6 +24,10 @@ function withApiBase(account) {
 
 export function useTempMail() {
   const [account, setAccount] = useState(null);
+  const [selectedProvider, setSelectedProvider] = useState(() => {
+    const saved = localStorage.getItem('plutomail_selected_provider');
+    return saved && saved !== 'auto' ? saved : 'mail.tm';
+  });
   const [messages, setMessages] = useState([]);
   const [selectedMessage, setSelectedMessage] = useState(null);
   const [messageBodyHtml, setMessageBodyHtml] = useState('');
@@ -49,27 +53,31 @@ export function useTempMail() {
     toastTimeoutRef.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
-  const fetchMessages = useCallback(async (apiBase, token) => {
-    if (!token) return;
+  const fetchMessages = useCallback(async (currentAccount) => {
+    if (!currentAccount?.token) return;
     setIsRefreshing(true);
     try {
-      const msgs = await listMessages(apiBase, token);
+      const msgs = await listMessages(currentAccount);
       setMessages(msgs);
     } catch (err) {
       if (err instanceof MailApiError && err.status === 401) {
         setAccount(null);
         localStorage.removeItem(STORAGE_KEY);
+      } else if (err instanceof MailApiError) {
+        // Not fatal (e.g. a transient rate limit) — log it instead of failing silently,
+        // but don't spam the user with a toast on every 10s poll.
+        console.error('[PlutoMail] fetchMessages failed:', err.message);
       }
     } finally {
       setIsRefreshing(false);
     }
   }, []);
 
-  const createNewAccount = useCallback(async ({ isRotation = false } = {}) => {
+  const createNewAccount = useCallback(async ({ providerId = selectedProvider, isRotation = false } = {}) => {
     setIsBootstrapping(true);
     setError(null);
     try {
-      const newAccount = await createTemporaryAccount();
+      const newAccount = await createTemporaryAccount(providerId);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newAccount));
       setAccount(newAccount);
       setMessages([]);
@@ -80,7 +88,7 @@ export function useTempMail() {
     } finally {
       setIsBootstrapping(false);
     }
-  }, []);
+  }, [selectedProvider]);
 
   // Bootstrap: restore saved account or create a fresh one.
   useEffect(() => {
@@ -89,9 +97,9 @@ export function useTempMail() {
       const parsed = withApiBase(JSON.parse(saved));
       setAccount(parsed);
       setIsBootstrapping(false);
-      fetchMessages(parsed.apiBase, parsed.token);
+      fetchMessages(parsed);
     } else {
-      createNewAccount();
+      createNewAccount({ providerId: selectedProvider });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -99,7 +107,7 @@ export function useTempMail() {
   // Polling
   useEffect(() => {
     if (!account?.token) return undefined;
-    pollingRef.current = setInterval(() => fetchMessages(account.apiBase, account.token), POLLING_INTERVAL_MS);
+    pollingRef.current = setInterval(() => fetchMessages(account), POLLING_INTERVAL_MS);
     return () => clearInterval(pollingRef.current);
   }, [account, fetchMessages]);
 
@@ -120,9 +128,19 @@ export function useTempMail() {
 
   const handleManualRefresh = useCallback(() => {
     if (!account?.token || isRefreshing || refreshCooldown > 0) return;
-    fetchMessages(account.apiBase, account.token);
+    fetchMessages(account);
     setRefreshCooldown(REFRESH_COOLDOWN_SEC);
   }, [account, isRefreshing, refreshCooldown, fetchMessages]);
+
+  const handleProviderChange = useCallback((newProviderId) => {
+    setSelectedProvider(newProviderId);
+    localStorage.setItem('plutomail_selected_provider', newProviderId);
+    localStorage.removeItem(STORAGE_KEY);
+    setAccount(null);
+    setMessages([]);
+    setSelectedMessage(null);
+    createNewAccount({ providerId: newProviderId, isRotation: false });
+  }, [createNewAccount]);
 
   const openMessage = useCallback(async (messageId) => {
     if (!account?.token) return;
@@ -130,7 +148,7 @@ export function useTempMail() {
     setMessageBodyHtml('');
     setAttachmentPreviews({});
     try {
-      const full = await getMessage(account.apiBase, account.token, messageId);
+      const full = await getMessage(account, messageId);
       setSelectedMessage(full);
       const { html, resolvedAttachments } = await renderMessageBody(full, account.token, account.apiBase);
       setMessageBodyHtml(html);
@@ -154,8 +172,8 @@ export function useTempMail() {
     setAccount(null);
     setMessages([]);
     setSelectedMessage(null);
-    createNewAccount({ isRotation: true });
-  }, [accountCooldown, createNewAccount]);
+    createNewAccount({ providerId: selectedProvider, isRotation: true });
+  }, [accountCooldown, createNewAccount, selectedProvider]);
 
   const copyAddress = useCallback(async () => {
     if (!account?.address) return;
@@ -202,6 +220,7 @@ export function useTempMail() {
 
   return {
     account,
+    selectedProvider,
     messages,
     selectedMessage,
     messageBodyHtml,
@@ -215,11 +234,12 @@ export function useTempMail() {
     accountCooldown,
     refreshCooldown,
     handleManualRefresh,
+    handleProviderChange,
     openMessage,
     closeMessage,
     rotateAccount,
     copyAddress,
     downloadAttachment,
-    retryBootstrap: () => createNewAccount(),
+    retryBootstrap: () => createNewAccount({ providerId: selectedProvider }),
   };
 }

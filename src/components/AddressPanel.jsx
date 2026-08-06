@@ -1,7 +1,9 @@
-import { AlertCircle, Check, Copy, Loader2, RefreshCw, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Copy, Loader2, RefreshCw, Trash2 } from 'lucide-react';
+import { PROVIDERS } from '../lib/mailApi';
 
 export default function AddressPanel({
   account,
+  selectedProvider = 'mail.tm',
   isBootstrapping,
   isRefreshing,
   refreshCooldown,
@@ -12,6 +14,7 @@ export default function AddressPanel({
   onRefresh,
   onRotate,
   onRetry,
+  onSelectProvider,
 }) {
   return (
     <section className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-6 sm:p-8">
@@ -19,11 +22,23 @@ export default function AddressPanel({
         <p className="text-xs font-medium uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
           Tu direccion temporal
         </p>
-        {account?.provider && (
-          <span className="text-[11px] font-mono text-zinc-400 dark:text-zinc-500 bg-zinc-100 dark:bg-zinc-800 px-2 py-0.5 rounded">
-            {account.provider}
-          </span>
-        )}
+
+        <div className="relative inline-flex items-center">
+          <select
+            value={selectedProvider}
+            onChange={(e) => onSelectProvider?.(e.target.value)}
+            disabled={isBootstrapping}
+            className="appearance-none text-[11px] font-mono text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700/60 pl-2 pr-5 py-0.5 rounded outline-none cursor-pointer hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+            title="Seleccionar proveedor de correo API"
+          >
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+          <ChevronDown size={11} className="absolute right-1.5 pointer-events-none text-zinc-400 dark:text-zinc-500" />
+        </div>
       </div>
 
       {isBootstrapping && !account ? (
