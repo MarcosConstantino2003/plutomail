@@ -47,25 +47,25 @@ async function fetchDropmail(path, options = {}) {
   }
 }
 
-async function request(baseUrl, path, options = {}) {
+async function request(baseUrl, path, options = {}, retries = 1) {
+  // Direct (non-proxied) fallbacks are pointless in the browser: mail.tm / mail.gw
+  // don't send CORS headers, so a direct fetch() would just fail with a CORS error
+  // and add noise. We only ever go through the proxy (or the vite dev proxy).
   const targetUrl = getProxyUrl(`${baseUrl}${path}`);
-  const directUrl = `${baseUrl}${path}`;
 
   try {
     const res = await fetch(targetUrl, options);
     if (!res.ok) {
-      if (res.status >= 500 && targetUrl !== directUrl) {
-        try {
-          const directRes = await fetch(directUrl, options);
-          if (directRes.ok) return directRes;
-        } catch {
-          // ignore fallback error
-        }
+      // Transient upstream/proxy hiccups (502/503/504) are worth one retry
+      // before giving up, since mail.tm rate-limits shared serverless IPs.
+      if ([502, 503, 504].includes(res.status) && retries > 0) {
+        await new Promise((r) => setTimeout(r, 500));
+        return request(baseUrl, path, options, retries - 1);
       }
       let message = `Request failed (${res.status})`;
       try {
         const body = await res.json();
-        message = body.message || body.detail || message;
+        message = body.message || body.detail || body.error || message;
       } catch {
         // response had no JSON body, keep default message
       }
@@ -74,12 +74,11 @@ async function request(baseUrl, path, options = {}) {
     return res;
   } catch (err) {
     if (err instanceof MailApiError) throw err;
-    if (targetUrl !== directUrl) {
-      const res = await fetch(directUrl, options);
-      if (!res.ok) throw new MailApiError(`Request failed (${res.status})`, res.status);
-      return res;
+    if (retries > 0) {
+      await new Promise((r) => setTimeout(r, 500));
+      return request(baseUrl, path, options, retries - 1);
     }
-    throw err;
+    throw new MailApiError(err.message || 'Error de red al contactar el proveedor.', 0);
   }
 }
 
@@ -94,7 +93,10 @@ async function fetchDomainsForProvider(provider) {
     const data = await res.json();
     const domains = (data['hydra:member'] || []).filter((d) => d.isActive !== false);
     return domains.map((d) => ({ domain: d.domain, provider }));
-  } catch {
+  } catch (err) {
+    // Keep the real reason in the console so "no domains" failures are debuggable
+    // instead of silently swallowed.
+    console.error(`[plutomail] Fallo al obtener dominios de ${provider.id}:`, err.message || err);
     return [];
   }
 }
@@ -108,8 +110,21 @@ export async function fetchAllAvailableDomains(targetProviderId = 'mail.tm') {
     targetProviders = PROVIDERS.filter((p) => p.id === 'mail.tm');
   }
   const results = await Promise.all(targetProviders.map(fetchDomainsForProvider));
-  const combined = results.flat();
-  if (!combined.length) throw new MailApiError('No hay dominios disponibles en este momento.');
+  let combined = results.flat();
+
+  // If the explicitly requested provider came back empty, try the other hydra
+  // provider (mail.gw) automatically before giving up entirely.
+  if (!combined.length && targetProviderId) {
+    const fallbackProviders = PROVIDERS.filter((p) => p.type === 'hydra' && p.id !== targetProviderId);
+    if (fallbackProviders.length) {
+      const fallbackResults = await Promise.all(fallbackProviders.map(fetchDomainsForProvider));
+      combined = fallbackResults.flat();
+    }
+  }
+
+  if (!combined.length) {
+    throw new MailApiError('No hay dominios disponibles en este momento. Revisa la consola para más detalles.');
+  }
   return combined;
 }
 
