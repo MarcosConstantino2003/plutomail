@@ -1,0 +1,16 @@
+{
+  "rewrites": [
+    {
+      "source": "/api-mailtm/:path*",
+      "destination": "https://api.mail.tm/:path*"
+    },
+    {
+      "source": "/api-mailgw/:path*",
+      "destination": "https://api.mail.gw/:path*"
+    },
+    {
+      "source": "/api-dropmail/:path*",
+      "destination": "https://dropmail.me/:path*"
+    }
+  ]
+}

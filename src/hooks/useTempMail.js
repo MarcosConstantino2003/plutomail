@@ -10,9 +10,9 @@ import {
 import { renderMessageBody } from '../lib/renderMessageBody';
 
 const STORAGE_KEY = 'plutomail_account';
-const POLLING_INTERVAL_MS = 10000;
+const POLLING_INTERVAL_MS = 3000;
 const ACCOUNT_COOLDOWN_SEC = 60;
-const REFRESH_COOLDOWN_SEC = 5;
+const REFRESH_COOLDOWN_SEC = 2;
 const COPIED_FEEDBACK_MS = 750;
 
 // Accounts saved before multi-provider support was added won't have an apiBase field.

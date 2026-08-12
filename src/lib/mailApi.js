@@ -18,41 +18,55 @@ class MailApiError extends Error {
   }
 }
 
+function getProxyUrl(fullUrl) {
+  if (typeof window !== 'undefined') {
+    if (fullUrl.includes('api.mail.tm')) return fullUrl.replace(/^https?:\/\/api\.mail\.tm/, '/api-mailtm');
+    if (fullUrl.includes('api.mail.gw')) return fullUrl.replace(/^https?:\/\/api\.mail\.gw/, '/api-mailgw');
+    if (fullUrl.includes('dropmail.me')) return fullUrl.replace(/^https?:\/\/dropmail\.me/, '/api-dropmail');
+  }
+  return fullUrl;
+}
+
 // Proxy-aware fetch helper for Dropmail to prevent CORS issues in dev & production
 async function fetchDropmail(path, options = {}) {
-  const isLocal =
-    typeof window !== 'undefined' &&
-    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-
-  // In local dev, use the Vite dev server proxy (/api-dropmail).
-  // In production, try direct fetch first, and fallback to corsproxy if blocked.
-  const primaryUrl = isLocal ? `/api-dropmail${path}` : `https://dropmail.me${path}`;
-
+  const targetUrl = getProxyUrl(`https://dropmail.me${path}`);
   try {
-    const res = await fetch(primaryUrl, options);
+    const res = await fetch(targetUrl, options);
     return res;
   } catch (err) {
-    if (!isLocal) {
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(`https://dropmail.me${path}`)}`;
-      return fetch(proxyUrl, options);
+    const directUrl = `https://dropmail.me${path}`;
+    if (targetUrl !== directUrl) {
+      return fetch(directUrl, options);
     }
     throw err;
   }
 }
 
 async function request(baseUrl, path, options = {}) {
-  const res = await fetch(`${baseUrl}${path}`, options);
-  if (!res.ok) {
-    let message = `Request failed (${res.status})`;
-    try {
-      const body = await res.json();
-      message = body.message || body.detail || message;
-    } catch {
-      // response had no JSON body, keep default message
+  const targetUrl = getProxyUrl(`${baseUrl}${path}`);
+  try {
+    const res = await fetch(targetUrl, options);
+    if (!res.ok) {
+      let message = `Request failed (${res.status})`;
+      try {
+        const body = await res.json();
+        message = body.message || body.detail || message;
+      } catch {
+        // response had no JSON body, keep default message
+      }
+      throw new MailApiError(message, res.status);
     }
-    throw new MailApiError(message, res.status);
+    return res;
+  } catch (err) {
+    if (err instanceof MailApiError) throw err;
+    const directUrl = `${baseUrl}${path}`;
+    if (targetUrl !== directUrl) {
+      const res = await fetch(directUrl, options);
+      if (!res.ok) throw new MailApiError(`Request failed (${res.status})`, res.status);
+      return res;
+    }
+    throw err;
   }
-  return res;
 }
 
 function authHeaders(token) {
@@ -106,43 +120,35 @@ export async function requestToken(baseUrl, address, password) {
   return res.json();
 }
 
-async function getDropmailToken() {
-  const savedToken = localStorage.getItem(DROPMAIL_TOKEN_KEY);
-  if (savedToken && savedToken.startsWith('af_')) {
-    return savedToken;
+async function getDropmailToken(forceRefresh = false) {
+  if (!forceRefresh) {
+    const savedToken = localStorage.getItem(DROPMAIL_TOKEN_KEY);
+    if (savedToken && savedToken.startsWith('af_')) {
+      return savedToken;
+    }
   }
 
-  try {
-    const res = await fetchDropmail('/api/token/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ type: 'af', lifetime: '1d' }),
-    });
+  localStorage.removeItem(DROPMAIL_TOKEN_KEY);
 
-    if (!res.ok) {
-      throw new MailApiError('No se pudo obtener el token de Dropmail', res.status);
-    }
-    const data = await res.json();
-    if (data.token && data.token.startsWith('af_')) {
-      localStorage.setItem(DROPMAIL_TOKEN_KEY, data.token);
-      return data.token;
-    }
-    if (data.error === 'captcha_required') {
-      const fallbackToken = 'af_AQJqdFv9xxbtOq0yTRaIOqYuJ_sGCPkSe_20CPz_';
-      localStorage.setItem(DROPMAIL_TOKEN_KEY, fallbackToken);
-      return fallbackToken;
-    }
-    throw new MailApiError(data.error || 'Token invalido de Dropmail');
-  } catch (err) {
-    if (err instanceof MailApiError) throw err;
-    const fallbackToken = 'af_AQJqdFv9xxbtOq0yTRaIOqYuJ_sGCPkSe_20CPz_';
-    localStorage.setItem(DROPMAIL_TOKEN_KEY, fallbackToken);
-    return fallbackToken;
+  const res = await fetchDropmail('/api/token/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ type: 'af', lifetime: '1d' }),
+  });
+
+  if (!res.ok) {
+    throw new MailApiError('No se pudo obtener el token de Dropmail', res.status);
   }
+  const data = await res.json();
+  if (data.token && data.token.startsWith('af_')) {
+    localStorage.setItem(DROPMAIL_TOKEN_KEY, data.token);
+    return data.token;
+  }
+  throw new MailApiError(data.error || 'Token invalido de Dropmail');
 }
 
-async function createDropmailAccount() {
-  const token = await getDropmailToken();
+async function createDropmailAccount(retryCount = 0) {
+  const token = await getDropmailToken(retryCount > 0);
   const mutation = `mutation {
     introduceSession {
       id
@@ -159,9 +165,18 @@ async function createDropmailAccount() {
     body: JSON.stringify({ query: mutation }),
   });
 
+  if ((!res.ok && (res.status === 403 || res.status === 401)) && retryCount === 0) {
+    localStorage.removeItem(DROPMAIL_TOKEN_KEY);
+    return createDropmailAccount(1);
+  }
+
   const body = await res.json();
   if (body.errors && body.errors.length) {
     const errMsg = body.errors[0]?.message || 'Error al conectar con Dropmail';
+    if ((errMsg.includes('token') || errMsg.includes('expired') || res.status === 403) && retryCount === 0) {
+      localStorage.removeItem(DROPMAIL_TOKEN_KEY);
+      return createDropmailAccount(1);
+    }
     localStorage.removeItem(DROPMAIL_TOKEN_KEY);
     throw new MailApiError(`Dropmail API Error: ${errMsg}`);
   }
@@ -227,9 +242,6 @@ export async function listMessages(accountOrApiBase, token, id, provider) {
   }
 
   if (providerId === 'dropmail.me' || (apiBase && apiBase.includes('dropmail.me'))) {
-    // NOTE: dropmail's Mail type exposes "receivedAt", not "createdAt" — requesting a
-    // field that doesn't exist invalidates the WHOLE query (GraphQL is strict about this),
-    // so this used to silently come back empty even when mail had actually arrived.
     const query = `query GetSession($id: ID!) {
       session(id: $id) {
         mails {
@@ -251,16 +263,24 @@ export async function listMessages(accountOrApiBase, token, id, provider) {
       body: JSON.stringify({ query, variables: { id: accountId } }),
     });
 
-    if (!res.ok) throw new MailApiError(`Error de red Dropmail (${res.status})`, res.status);
+    if (!res.ok) {
+      if (res.status === 403 || res.status === 401) {
+        localStorage.removeItem(DROPMAIL_TOKEN_KEY);
+        throw new MailApiError('La sesion o token de Dropmail ha expirado.', 401);
+      }
+      throw new MailApiError(`Error de red Dropmail (${res.status})`, res.status);
+    }
+
     const body = await res.json();
 
-    // Surface GraphQL-level errors instead of swallowing them into an empty inbox.
-    // SESSION_NOT_FOUND means the session expired server-side (dropmail sessions are
-    // short-lived unless kept alive by activity) — treat it like an expired/invalid token.
     if (body.errors && body.errors.length) {
       const code = body.errors[0]?.extensions?.code;
       const errMsg = body.errors[0]?.message || 'Error al consultar Dropmail';
-      throw new MailApiError(errMsg, code === 'SESSION_NOT_FOUND' ? 401 : 400);
+      if (code === 'SESSION_NOT_FOUND' || errMsg.includes('token') || errMsg.includes('expired')) {
+        localStorage.removeItem(DROPMAIL_TOKEN_KEY);
+        throw new MailApiError('La sesion o token de Dropmail ha expirado.', 401);
+      }
+      throw new MailApiError(errMsg, 400);
     }
 
     const mails = body.data?.session?.mails || [];
