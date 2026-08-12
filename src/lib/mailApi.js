@@ -44,9 +44,19 @@ async function fetchDropmail(path, options = {}) {
 
 async function request(baseUrl, path, options = {}) {
   const targetUrl = getProxyUrl(`${baseUrl}${path}`);
+  const directUrl = `${baseUrl}${path}`;
+
   try {
     const res = await fetch(targetUrl, options);
     if (!res.ok) {
+      if (res.status >= 500 && targetUrl !== directUrl) {
+        try {
+          const directRes = await fetch(directUrl, options);
+          if (directRes.ok) return directRes;
+        } catch {
+          // ignore fallback error
+        }
+      }
       let message = `Request failed (${res.status})`;
       try {
         const body = await res.json();
@@ -59,7 +69,6 @@ async function request(baseUrl, path, options = {}) {
     return res;
   } catch (err) {
     if (err instanceof MailApiError) throw err;
-    const directUrl = `${baseUrl}${path}`;
     if (targetUrl !== directUrl) {
       const res = await fetch(directUrl, options);
       if (!res.ok) throw new MailApiError(`Request failed (${res.status})`, res.status);
