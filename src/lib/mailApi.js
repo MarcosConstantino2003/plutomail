@@ -20,9 +20,14 @@ class MailApiError extends Error {
 
 function getProxyUrl(fullUrl) {
   if (typeof window !== 'undefined') {
-    if (fullUrl.includes('api.mail.tm')) return fullUrl.replace(/^https?:\/\/api\.mail\.tm/, '/api-mailtm');
-    if (fullUrl.includes('api.mail.gw')) return fullUrl.replace(/^https?:\/\/api\.mail\.gw/, '/api-mailgw');
-    if (fullUrl.includes('dropmail.me')) return fullUrl.replace(/^https?:\/\/dropmail\.me/, '/api-dropmail');
+    const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+    if (isLocal) {
+      if (fullUrl.includes('api.mail.tm')) return fullUrl.replace(/^https?:\/\/api\.mail\.tm/, '/api-mailtm');
+      if (fullUrl.includes('api.mail.gw')) return fullUrl.replace(/^https?:\/\/api\.mail\.gw/, '/api-mailgw');
+      if (fullUrl.includes('dropmail.me')) return fullUrl.replace(/^https?:\/\/dropmail\.me/, '/api-dropmail');
+    } else {
+      return `/api/proxy?targetUrl=${encodeURIComponent(fullUrl)}`;
+    }
   }
   return fullUrl;
 }
