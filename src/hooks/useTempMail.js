@@ -18,7 +18,8 @@ const COPIED_FEEDBACK_MS = 750;
 // Accounts saved before multi-provider support was added won't have an apiBase field.
 // They were always created against mail.tm, so that's the safe fallback.
 function withApiBase(account) {
-  if (!account) return account;
+  if (!account) return null;
+  if (account.provider === 'mail.gw') return null;
   return { apiBase: DEFAULT_API_BASE, ...account };
 }
 
@@ -26,6 +27,10 @@ export function useTempMail() {
   const [account, setAccount] = useState(null);
   const [selectedProvider, setSelectedProvider] = useState(() => {
     const saved = localStorage.getItem('plutomail_selected_provider');
+    if (saved === 'mail.gw') {
+      localStorage.setItem('plutomail_selected_provider', 'guerrillamail');
+      return 'guerrillamail';
+    }
     return saved && saved !== 'auto' ? saved : 'mail.tm';
   });
   const [messages, setMessages] = useState([]);
@@ -53,26 +58,6 @@ export function useTempMail() {
     toastTimeoutRef.current = setTimeout(() => setToast(null), 3000);
   }, []);
 
-  const fetchMessages = useCallback(async (currentAccount) => {
-    if (!currentAccount?.token) return;
-    setIsRefreshing(true);
-    try {
-      const msgs = await listMessages(currentAccount);
-      setMessages(msgs);
-    } catch (err) {
-      if (err instanceof MailApiError && err.status === 401) {
-        setAccount(null);
-        localStorage.removeItem(STORAGE_KEY);
-      } else if (err instanceof MailApiError) {
-        // Not fatal (e.g. a transient rate limit) — log it instead of failing silently,
-        // but don't spam the user with a toast on every 10s poll.
-        console.error('[PlutoMail] fetchMessages failed:', err.message);
-      }
-    } finally {
-      setIsRefreshing(false);
-    }
-  }, []);
-
   const createNewAccount = useCallback(async ({ providerId = selectedProvider, isRotation = false } = {}) => {
     setIsBootstrapping(true);
     setError(null);
@@ -90,15 +75,43 @@ export function useTempMail() {
     }
   }, [selectedProvider]);
 
+  const fetchMessages = useCallback(async (currentAccount) => {
+    if (!currentAccount?.token) return;
+    setIsRefreshing(true);
+    try {
+      const msgs = await listMessages(currentAccount);
+      setMessages(msgs);
+    } catch (err) {
+      if (err instanceof MailApiError && err.status === 401) {
+        setAccount(null);
+        localStorage.removeItem(STORAGE_KEY);
+        createNewAccount({ providerId: selectedProvider });
+      } else if (err instanceof MailApiError) {
+        // Not fatal (e.g. a transient rate limit) — log it instead of failing silently,
+        // but don't spam the user with a toast on every 10s poll.
+        console.error('[PlutoMail] fetchMessages failed:', err.message);
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [createNewAccount, selectedProvider]);
+
   // Bootstrap: restore saved account or create a fresh one.
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      const parsed = withApiBase(JSON.parse(saved));
+    let parsed = null;
+    try {
+      parsed = saved ? withApiBase(JSON.parse(saved)) : null;
+    } catch {
+      parsed = null;
+    }
+
+    if (parsed) {
       setAccount(parsed);
       setIsBootstrapping(false);
       fetchMessages(parsed);
     } else {
+      localStorage.removeItem(STORAGE_KEY);
       createNewAccount({ providerId: selectedProvider });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

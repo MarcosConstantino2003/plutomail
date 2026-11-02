@@ -11,11 +11,11 @@ export default defineConfig({
         secure: false,
         rewrite: (path) => path.replace(/^\/api-mailtm/, ''),
       },
-      '/api-mailgw': {
-        target: 'https://api.mail.gw',
+      '/api-guerrilla': {
+        target: 'https://api.guerrillamail.com',
         changeOrigin: true,
         secure: false,
-        rewrite: (path) => path.replace(/^\/api-mailgw/, ''),
+        rewrite: (path) => path.replace(/^\/api-guerrilla/, ''),
       },
       '/api-dropmail': {
         target: 'https://dropmail.me',
