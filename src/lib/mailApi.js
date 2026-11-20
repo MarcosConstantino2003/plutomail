@@ -333,8 +333,12 @@ export async function listMessages(accountOrApiBase, token, id, provider) {
   }
 
   if (providerId === 'guerrillamail' || (apiBase && apiBase.includes('guerrillamail'))) {
-    const data = await fetchGuerrilla(`f=check_email&seq=0&sid_token=${encodeURIComponent(accountToken)}`);
-    const list = data.list || [];
+    // get_email_list always returns the full inbox; check_email only yields unseen items once per sid_token.
+    const data = await fetchGuerrilla(`f=get_email_list&offset=0&sid_token=${encodeURIComponent(accountToken)}`);
+    if (!Array.isArray(data?.list)) {
+      throw new MailApiError('La sesion de Guerrilla Mail ha expirado.', 401);
+    }
+    const list = data.list;
     return list.map((item) => {
       const isHtml = item.content_type === 'html' || (item.mail_body && item.mail_body.includes('<') && item.mail_body.includes('>'));
       return {
@@ -391,14 +395,18 @@ export async function listMessages(accountOrApiBase, token, id, provider) {
     if (body.errors && body.errors.length) {
       const code = body.errors[0]?.extensions?.code;
       const errMsg = body.errors[0]?.message || 'Error al consultar Dropmail';
-      if (code === 'SESSION_NOT_FOUND' || errMsg.includes('token') || errMsg.includes('expired')) {
+      if (code === 'SESSION_NOT_FOUND' || errMsg.includes('invalid_id') || errMsg.includes('token') || errMsg.includes('expired')) {
         if (typeof localStorage !== 'undefined') localStorage.removeItem(DROPMAIL_TOKEN_KEY);
         throw new MailApiError('La sesion o token de Dropmail ha expirado.', 401);
       }
       throw new MailApiError(errMsg, 400);
     }
 
-    const mails = body.data?.session?.mails || [];
+    if (!body.data?.session) {
+      throw new MailApiError('La sesion o token de Dropmail ha expirado.', 401);
+    }
+
+    const mails = body.data.session.mails || [];
 
     return mails.map((mail) => ({
       id: mail.id,

@@ -51,6 +51,15 @@ export function useTempMail() {
   const pollingRef = useRef(null);
   const toastTimeoutRef = useRef(null);
   const copiedTimeoutRef = useRef(null);
+  const activeAccountRef = useRef(null);
+  const fetchSeqRef = useRef(0);
+  const hasBootstrappedRef = useRef(false);
+
+  const setActiveAccount = useCallback((nextAccount) => {
+    activeAccountRef.current = nextAccount;
+    fetchSeqRef.current += 1;
+    setAccount(nextAccount);
+  }, []);
 
   const showToast = useCallback((message, type = 'success') => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
@@ -64,7 +73,7 @@ export function useTempMail() {
     try {
       const newAccount = await createTemporaryAccount(providerId);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(newAccount));
-      setAccount(newAccount);
+      setActiveAccount(newAccount);
       setMessages([]);
       setSelectedMessage(null);
       if (isRotation) setAccountCooldown(ACCOUNT_COOLDOWN_SEC);
@@ -73,19 +82,35 @@ export function useTempMail() {
     } finally {
       setIsBootstrapping(false);
     }
-  }, [selectedProvider]);
+  }, [selectedProvider, setActiveAccount]);
 
   const fetchMessages = useCallback(async (currentAccount) => {
     if (!currentAccount?.token) return;
+    const seq = ++fetchSeqRef.current;
+    const targetToken = currentAccount.token;
+    const targetId = currentAccount.id;
     setIsRefreshing(true);
     try {
       const msgs = await listMessages(currentAccount);
+      if (
+        activeAccountRef.current?.token !== targetToken ||
+        activeAccountRef.current?.id !== targetId ||
+        seq !== fetchSeqRef.current
+      ) {
+        return;
+      }
       setMessages(msgs);
     } catch (err) {
+      if (
+        activeAccountRef.current?.token !== targetToken ||
+        activeAccountRef.current?.id !== targetId
+      ) {
+        return;
+      }
       if (err instanceof MailApiError && err.status === 401) {
-        setAccount(null);
+        setActiveAccount(null);
         localStorage.removeItem(STORAGE_KEY);
-        createNewAccount({ providerId: selectedProvider });
+        createNewAccount({ providerId: currentAccount.provider || selectedProvider });
       } else if (err instanceof MailApiError) {
         // Not fatal (e.g. a transient rate limit) — log it instead of failing silently,
         // but don't spam the user with a toast on every 10s poll.
@@ -94,10 +119,13 @@ export function useTempMail() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [createNewAccount, selectedProvider]);
+  }, [createNewAccount, selectedProvider, setActiveAccount]);
 
   // Bootstrap: restore saved account or create a fresh one.
   useEffect(() => {
+    if (hasBootstrappedRef.current) return;
+    hasBootstrappedRef.current = true;
+
     const saved = localStorage.getItem(STORAGE_KEY);
     let parsed = null;
     try {
@@ -107,7 +135,7 @@ export function useTempMail() {
     }
 
     if (parsed) {
-      setAccount(parsed);
+      setActiveAccount(parsed);
       setIsBootstrapping(false);
       fetchMessages(parsed);
     } else {
@@ -149,11 +177,11 @@ export function useTempMail() {
     setSelectedProvider(newProviderId);
     localStorage.setItem('plutomail_selected_provider', newProviderId);
     localStorage.removeItem(STORAGE_KEY);
-    setAccount(null);
+    setActiveAccount(null);
     setMessages([]);
     setSelectedMessage(null);
     createNewAccount({ providerId: newProviderId, isRotation: false });
-  }, [createNewAccount]);
+  }, [createNewAccount, setActiveAccount]);
 
   const openMessage = useCallback(async (messageId) => {
     if (!account?.token) return;
@@ -182,11 +210,11 @@ export function useTempMail() {
   const rotateAccount = useCallback(() => {
     if (accountCooldown > 0) return;
     localStorage.removeItem(STORAGE_KEY);
-    setAccount(null);
+    setActiveAccount(null);
     setMessages([]);
     setSelectedMessage(null);
     createNewAccount({ providerId: selectedProvider, isRotation: true });
-  }, [accountCooldown, createNewAccount, selectedProvider]);
+  }, [accountCooldown, createNewAccount, selectedProvider, setActiveAccount]);
 
   const copyAddress = useCallback(async () => {
     if (!account?.address) return;
